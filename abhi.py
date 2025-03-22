@@ -9,12 +9,9 @@ from langchain.vectorstores import FAISS
 from langchain.memory import ConversationBufferMemory
 from langchain.document_loaders import PyPDFLoader, TextLoader, Docx2txtLoader
 from langchain.embeddings import HuggingFaceEmbeddings
-from langchain.callbacks.streaming_stdout import StreamingStdOutCallbackHandler
-from dotenv import load_dotenv
+from huggingface_hub import HfApi
 
-load_dotenv()
-
-# Function to initialize session state
+# Initialize session state
 def initialize_session_state():
     if 'history' not in st.session_state:
         st.session_state['history'] = []
@@ -22,14 +19,26 @@ def initialize_session_state():
         st.session_state['generated'] = ["Hello! Ask me anything about your documents."]
     if 'past' not in st.session_state:
         st.session_state['past'] = ["Hey! 👋"]
+    if 'hf_api_key' not in st.session_state:
+        st.session_state['hf_api_key'] = None
 
-# Function to manage conversation flow
+# Function to validate Hugging Face API key
+def validate_huggingface_api_key(api_key):
+    try:
+        api = HfApi(token=api_key)
+        api.model_info("google/flan-t5-small")  # Check if model is accessible
+        return True
+    except Exception as e:
+        st.error("❌ Invalid Hugging Face API token. Please enter a valid token.")
+        return False
+
+# Conversation logic
 def conversation_chat(query, chain, history):
     result = chain({"question": query, "chat_history": history})
     history.append((query, result["answer"]))
     return result["answer"]
 
-# Display chat history and handle user input
+# Display chat history
 def display_chat_history(chain):
     reply_container = st.container()
     container = st.container()
@@ -49,33 +58,28 @@ def display_chat_history(chain):
         with reply_container:
             for i in range(len(st.session_state['generated'])):
                 message(st.session_state["past"][i], is_user=True, key=str(i) + '_user', avatar_style="thumbs")
-                message(st.session_state["generated"][i], key=str(i), avatar_style="fun-emoji")
+                message(st.session_state['generated'][i], key=str(i), avatar_style="fun-emoji")
 
-# Create conversational chain using two models (retriever + generator)
-def create_conversational_chain(vector_store):
-    load_dotenv()  # Load environment variables for Hugging Face API key
-
-    # Retrieve Model (Use text-generation task here for simplicity)
+# Create conversational chain
+def create_conversational_chain(vector_store, hf_api_key):
     retriever_llm = HuggingFaceHub(
-        repo_id="google/flan-t5-small",  # A smaller text generation model for retrieval
+        repo_id="google/flan-t5-small",
         model_kwargs={"temperature": 0.01, "max_length": 500},
-        huggingfacehub_api_token=os.getenv("HF_API_KEY")
+        huggingfacehub_api_token=hf_api_key
     )
 
-    # Generator Model (Using a larger text generation model for answer generation)
     generator_llm = HuggingFaceHub(
-        repo_id="google/flan-t5-large",  # A larger, more powerful model for generation
+        repo_id="google/flan-t5-large",
         model_kwargs={"temperature": 0.01, "max_length": 500},
-        huggingfacehub_api_token=os.getenv("HF_API_KEY")
+        huggingfacehub_api_token=hf_api_key
     )
 
     memory = ConversationBufferMemory(memory_key="chat_history", return_messages=True)
-    
-    # Create ConversationalRetrievalChain with two models: one for retrieval and one for generation
+
     chain = ConversationalRetrievalChain.from_llm(
-        llm=generator_llm,  # Use generator for response generation
+        llm=generator_llm,
         chain_type="stuff",
-        retriever=vector_store.as_retriever(search_kwargs={"k": 3}),  # Use retriever model to find relevant docs
+        retriever=vector_store.as_retriever(search_kwargs={"k": 3}),
         memory=memory
     )
     return chain
@@ -84,6 +88,19 @@ def create_conversational_chain(vector_store):
 def main():
     initialize_session_state()
     st.title("Multi-Docs ChatBot using Two Models (Retriever + Generator)")
+
+    # Sidebar for API Token Input
+    st.sidebar.title("Settings")
+    st.session_state['hf_api_key'] = st.sidebar.text_input("Enter Hugging Face API token:", type="password")
+
+    if not st.session_state['hf_api_key']:
+        st.warning("⚠️ Please enter your Hugging Face API token to proceed.")
+        st.stop()
+
+    if not validate_huggingface_api_key(st.session_state['hf_api_key']):
+        st.stop()
+
+    # Sidebar for document upload
     st.sidebar.title("Document Processing")
     uploaded_files = st.sidebar.file_uploader("Upload files", accept_multiple_files=True)
 
@@ -98,7 +115,7 @@ def main():
             loader = None
             if file_extension == ".pdf":
                 loader = PyPDFLoader(temp_file_path)
-            elif file_extension == ".docx" or file_extension == ".doc":
+            elif file_extension in [".docx", ".doc"]:
                 loader = Docx2txtLoader(temp_file_path)
             elif file_extension == ".txt":
                 loader = TextLoader(temp_file_path)
@@ -107,18 +124,18 @@ def main():
                 text.extend(loader.load())
                 os.remove(temp_file_path)
 
-        # Split the document into smaller chunks
+        # Split text into chunks
         text_splitter = CharacterTextSplitter(separator="\n", chunk_size=1000, chunk_overlap=100, length_function=len)
         text_chunks = text_splitter.split_documents(text)
 
-        # Create embeddings and vector store
+        # Create vector store
         embeddings = HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2", model_kwargs={'device': 'cpu'})
         vector_store = FAISS.from_documents(text_chunks, embedding=embeddings)
 
-        # Create the chain object
-        chain = create_conversational_chain(vector_store)
+        # Create conversational chain
+        chain = create_conversational_chain(vector_store, st.session_state['hf_api_key'])
 
-        # Display the chat history and allow user interaction
+        # Display chat history
         display_chat_history(chain)
 
 if __name__ == "__main__":
