@@ -1,9 +1,9 @@
-langchain==0.0.239
-langchain_community
 streamlit
 streamlit-chat
-sentence-transformers
+langchain
 faiss-cpu
-python-docx
-pypdf  # For PDF support
-PyPDF2  # Keep if necessary, although pypdf is a more updated PDF handling library
+huggingface_hub
+pypdf
+sentence-transformers
+docx2txt
+langchain-community
